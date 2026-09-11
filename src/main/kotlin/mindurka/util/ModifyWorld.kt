@@ -1,5 +1,6 @@
 package mindurka.util
 
+import arc.util.Log
 import arc.util.io.Writes
 import mindurka.api.Consts
 import mindustry.Vars
@@ -18,6 +19,52 @@ import mindustry.world.Tile
 import mindustry.world.blocks.environment.Floor
 
 object ModifyWorld {
+    /** Mirrors the private NetServer.maxSnapshotSize. */
+    private const val maxSnapshotSize = 800
+
+    /**
+     * Synchronize many buildings to one connection.
+     *
+     * Use this instead of calling [syncBuild] in a loop. `blockSnapshot` is an unreliable packet,
+     * so a packet per building goes straight into the server's 41 000-byte UDP write buffer with
+     * no backpressure; on overflow `arc.net.Server.sendToAllUDP` closes the connection itself
+     * (`con.close(DcReason.error)`), which the server only notices later as "disappeared".
+     * Batching to [maxSnapshotSize] is what vanilla's own block snapshot loop does.
+     */
+    @JvmStatic
+    fun syncBuilds(con: NetConnection, builds: Iterable<Building>) {
+        val prevSyncTarget = NetServer.mdSyncTarget
+        NetServer.mdSyncTarget = con.player
+        try {
+            val writes = Writes(Consts.dataStream)
+            Consts.syncStream.reset()
+            var sent = 0
+
+            for (build in builds) {
+                Consts.dataStream.writeInt(build.pos())
+                Consts.dataStream.writeShort(build.block.id.toInt())
+                build.writeAll(writes)
+                sent++
+
+                if (Consts.syncStream.size() > maxSnapshotSize) {
+                    Consts.dataStream.flush()
+                    Call.blockSnapshot(con, sent.toShort(), Consts.syncStream.toByteArray())
+                    sent = 0
+                    Consts.syncStream.reset()
+                }
+            }
+
+            if (sent > 0) {
+                Consts.dataStream.flush()
+                Call.blockSnapshot(con, sent.toShort(), Consts.syncStream.toByteArray())
+            }
+        } catch (e: Exception) {
+            Log.err("Failed to sync buildings", e)
+        } finally {
+            NetServer.mdSyncTarget = prevSyncTarget
+        }
+    }
+
     /**
      * Synchronize a building over the network.
      */
@@ -31,7 +78,10 @@ object ModifyWorld {
             Consts.dataStream.writeShort(build.block.id.toInt())
             build.writeAll(Writes(Consts.dataStream))
             Consts.dataStream.close()
-            val bytes = Consts.syncStream.bytes
+            // toByteArray(), not .bytes: getBytes() hands back the whole ReusableByteOutStream
+            // buffer, whose length is its capacity, so the packet carried hundreds of stale bytes
+            // per building instead of the ~30 actually written.
+            val bytes = Consts.syncStream.toByteArray()
             Call.blockSnapshot(con, 1, bytes)
         } catch (_: Exception) {} finally {
             NetServer.mdSyncTarget = prevSyncTarget
@@ -47,7 +97,8 @@ object ModifyWorld {
         Consts.dataStream.writeShort(build.block.id.toInt())
         build.writeAll(Writes(Consts.dataStream))
         Consts.dataStream.close()
-        val bytes = Consts.syncStream.bytes
+        // See the note in the overload above.
+        val bytes = Consts.syncStream.toByteArray()
         Call.blockSnapshot(1, bytes)
     }
 

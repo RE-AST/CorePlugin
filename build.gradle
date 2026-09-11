@@ -152,7 +152,7 @@ tasks.register("generateExtras") {
 tasks.named("build") {
     dependsOn ":test"
 
-    def jarPath = Paths.get("${jar.archivePath}")
+    def jarPath = jar.archiveFile.get().asFile.toPath()
     doLast {
         Files.createDirectories(workspacePath.resolve(".bin"))
         Files.copy(

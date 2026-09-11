@@ -62,6 +62,7 @@ import mindustry.gen.ConnectCallPacket
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.SetTileCallPacket
+import mindustry.mod.data.PatchAsset
 import mindustry.net.Administration
 import mindustry.world.Block
 import mindustry.world.blocks.environment.StaticWall
@@ -177,8 +178,8 @@ object CorePlugin {
         on<EventType.WorldLoadEvent>(priority = Priority.Low) {
             fakeBlockPos.clear()
 
-            if (Vars.state.patcher.patches.size > 0 && Vars.state.patcher.patches[0].name == "Mindurka Default Patch") {
-                Vars.state.patcher.patches.remove(0)
+            if (Vars.state.data.patches.size > 0 && Vars.state.data.patches[0].name == "Mindurka Default Patch") {
+                Vars.state.data.patches.remove(0)
             }
 
             fakeBlockKind = run {
@@ -252,7 +253,7 @@ object CorePlugin {
                 }
             }
 
-            Vars.state.patcher.apply(Vars.state.patcher.patches.map { it.patch }.apply { insert(0, run {
+            Vars.state.data.reloadPatches(Vars.state.data.patches.copy().apply { insert(0, PatchAsset(run {
                 val patch = StringBuilder()
 
                 patch.append("name: Mindurka Default Patch\n")
@@ -286,7 +287,7 @@ object CorePlugin {
                 debug{"$patch"}
 
                 patch.toString()
-            }) })
+            })) })
         }
         Vars.netServer.admins.addActionFilter { act ->
             if (!(act.type == Administration.ActionType.breakBlock && act.block == fakeBlockKind) || fakeBlockKind == null) return@addActionFilter true

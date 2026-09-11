@@ -39,7 +39,7 @@ fun setupTerminalInput() {
     }
 
     try {
-        val terminal = TerminalBuilder.builder().jna(true).system(true).dumb(true).build()
+        val terminal = TerminalBuilder.builder().system(true).dumb(true).build()
         val reader = LineReaderBuilder.builder().terminal(terminal).build()
 
         terminal.enterRawMode()

@@ -39,46 +39,76 @@ object ModifyWorld {
     @JvmStatic
     @JvmOverloads
     fun syncRules(con: NetConnection? = null) {
-        val rules = Vars.state.rules.copy()
+        // The live ruleset is borrowed and put back rather than Rules.copy()ied: copy() is a JSON
+        // write plus a parse of the whole 7-22 kB ruleset ("Not efficient at all, do not use
+        // often" -- Rules.java), and Call.setRules serializes on this thread before it returns
+        // (Connection.sendTCP -> TcpConnection.send -> serialization.write).
+        val rules = Vars.state.rules
         val tags = rules.tags
         rules.tags = StringMap()
-
-        val bare = JsonIO.write(rules).length
-        Log.debug("Ruleset @ B without tags, @ tag(s), limit @ B", bare, tags.size, rulesPacketLimit)
-        if (bare > rulesPacketLimit) {
-            Log.err("Ruleset is @ B even without tags, over the @ B packet limit. Not syncing it: sending it would drop every client.",
-                bare, rulesPacketLimit)
-            return
-        }
-
-        var budget = rulesPacketLimit - bare
-        val entries = ArrayList<Pair<String, String>>(tags.size)
-        tags.each { key, value -> entries.add(key to value) }
-        entries.sortBy { it.first.length + it.second.length }
-
-        val dropped = ArrayList<String>()
-        for ((key, value) in entries) {
-            val cost = key.length + value.length + 8 // quotes, colon, separator
-            if (cost <= budget) {
-                budget -= cost
-                rules.tags.put(key, value)
-            } else {
-                dropped.add(key)
+        try {
+            // TypeIO.writeRules sends JsonIO.write(rules).getBytes(UTF-8), so the budget is bytes,
+            // not String.length -- one Cyrillic character costs two of them.
+            val bare = utf8Size(JsonIO.write(rules))
+            Log.debug("Ruleset @ B without tags, @ tag(s), limit @ B", bare, tags.size, rulesPacketLimit)
+            if (bare > rulesPacketLimit) {
+                Log.err("Ruleset is @ B even without tags, over the @ B packet limit. Not syncing it: sending it would drop every client.",
+                    bare, rulesPacketLimit)
+                return
             }
-        }
 
-        if (dropped.isNotEmpty()) {
-            Log.warn("Ruleset does not fit in one packet (@ B without tags); @ tag(s) not synced: @",
-                bare, dropped.size, dropped.joinToString(", "))
-        }
+            var budget = rulesPacketLimit - bare
+            val entries = ArrayList<Triple<String, String, Int>>(tags.size)
+            // + 8 for quotes, colon and separator
+            tags.each { key, value -> entries.add(Triple(key, value, utf8Size(key) + utf8Size(value) + 8)) }
+            entries.sortBy { it.third }
 
-        if (con == null) Call.setRules(rules) else Call.setRules(con, rules)
+            val dropped = ArrayList<String>()
+            for ((key, value, cost) in entries) {
+                if (cost <= budget) {
+                    budget -= cost
+                    rules.tags.put(key, value)
+                } else {
+                    dropped.add(key)
+                }
+            }
+
+            if (dropped.isNotEmpty()) {
+                Log.warn("Ruleset does not fit in one packet (@ B without tags); @ tag(s) not synced: @",
+                    bare, dropped.size, dropped.joinToString(", "))
+            }
+
+            if (con == null) Call.setRules(rules) else Call.setRules(con, rules)
+        } finally {
+            rules.tags = tags
+        }
+    }
+
+    /** UTF-8 length of a string, without encoding it into a throwaway array. */
+    private fun utf8Size(s: String): Int {
+        var size = 0
+        var i = 0
+        while (i < s.length) {
+            val c = s[i].code
+            size += when {
+                c < 0x80 -> 1
+                c < 0x800 -> 2
+                c in 0xD800..0xDBFF && i + 1 < s.length && s[i + 1].code in 0xDC00..0xDFFF -> { i++; 4 }
+                else -> 3
+            }
+            i++
+        }
+        return size
     }
 
     /**
      * Synchronize many buildings to one connection, batched like vanilla's own block snapshot
      * loop. Use this instead of calling [syncBuild] in a loop: blockSnapshot is unreliable, and a
      * packet per building floods the UDP write buffer.
+     *
+     * Pass the smallest set that answers the question. NetServer.writeBlockSnapshots only ever
+     * walks blocks flagged BlockFlag.synced; handing this the whole Groups.build is thousands of
+     * buildings and hundreds of packets in one frame.
      */
     @JvmStatic
     fun syncBuilds(con: NetConnection, builds: Iterable<Building>) {
@@ -96,7 +126,7 @@ object ModifyWorld {
                 sent++
 
                 if (Consts.syncStream.size() > maxSnapshotSize) {
-                    Consts.dataStream.flush()
+                    Consts.dataStream.close()
                     Call.blockSnapshot(con, sent.toShort(), Consts.syncStream.toByteArray())
                     sent = 0
                     Consts.syncStream.reset()
@@ -104,7 +134,7 @@ object ModifyWorld {
             }
 
             if (sent > 0) {
-                Consts.dataStream.flush()
+                Consts.dataStream.close()
                 Call.blockSnapshot(con, sent.toShort(), Consts.syncStream.toByteArray())
             }
         } catch (e: Exception) {
@@ -130,7 +160,9 @@ object ModifyWorld {
             // toByteArray(), not .bytes: getBytes() returns the buffer, sized by capacity.
             val bytes = Consts.syncStream.toByteArray()
             Call.blockSnapshot(con, 1, bytes)
-        } catch (_: Exception) {} finally {
+        } catch (e: Exception) {
+            Log.err("Failed to sync building at ${build.tile}", e)
+        } finally {
             NetServer.mdSyncTarget = prevSyncTarget
         }
     }

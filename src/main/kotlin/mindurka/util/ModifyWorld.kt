@@ -44,6 +44,7 @@ object ModifyWorld {
         rules.tags = StringMap()
 
         val bare = JsonIO.write(rules).length
+        Log.debug("Ruleset @ B without tags, @ tag(s), limit @ B", bare, tags.size, rulesPacketLimit)
         if (bare > rulesPacketLimit) {
             Log.err("Ruleset is @ B even without tags, over the @ B packet limit. Not syncing it: sending it would drop every client.",
                 bare, rulesPacketLimit)

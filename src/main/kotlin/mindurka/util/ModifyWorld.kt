@@ -23,13 +23,9 @@ object ModifyWorld {
     private const val maxSnapshotSize = 800
 
     /**
-     * Synchronize many buildings to one connection.
-     *
-     * Use this instead of calling [syncBuild] in a loop. `blockSnapshot` is an unreliable packet,
-     * so a packet per building goes straight into the server's 41 000-byte UDP write buffer with
-     * no backpressure; on overflow `arc.net.Server.sendToAllUDP` closes the connection itself
-     * (`con.close(DcReason.error)`), which the server only notices later as "disappeared".
-     * Batching to [maxSnapshotSize] is what vanilla's own block snapshot loop does.
+     * Synchronize many buildings to one connection, batched like vanilla's own block snapshot
+     * loop. Use this instead of calling [syncBuild] in a loop: blockSnapshot is unreliable, and a
+     * packet per building floods the UDP write buffer.
      */
     @JvmStatic
     fun syncBuilds(con: NetConnection, builds: Iterable<Building>) {
@@ -78,9 +74,7 @@ object ModifyWorld {
             Consts.dataStream.writeShort(build.block.id.toInt())
             build.writeAll(Writes(Consts.dataStream))
             Consts.dataStream.close()
-            // toByteArray(), not .bytes: getBytes() hands back the whole ReusableByteOutStream
-            // buffer, whose length is its capacity, so the packet carried hundreds of stale bytes
-            // per building instead of the ~30 actually written.
+            // toByteArray(), not .bytes: getBytes() returns the buffer, sized by capacity.
             val bytes = Consts.syncStream.toByteArray()
             Call.blockSnapshot(con, 1, bytes)
         } catch (_: Exception) {} finally {
@@ -97,7 +91,6 @@ object ModifyWorld {
         Consts.dataStream.writeShort(build.block.id.toInt())
         build.writeAll(Writes(Consts.dataStream))
         Consts.dataStream.close()
-        // See the note in the overload above.
         val bytes = Consts.syncStream.toByteArray()
         Call.blockSnapshot(1, bytes)
     }

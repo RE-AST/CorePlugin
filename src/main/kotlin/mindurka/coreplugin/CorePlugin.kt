@@ -80,6 +80,44 @@ object CorePlugin {
     /** arcnet serializes one object into a 16384-byte buffer (ArcNetProvider: new Server(..., 16384, ...)). */
     private const val rulesPacketLimit = 15_000
 
+    /**
+     * Re-send the ruleset to one player. Tags go smallest-first while they fit: the whole ruleset
+     * is one JSON blob in one packet, and overflowing arcnet's object buffer makes arcnet drop the
+     * connection. `setRules` replaces the client's Rules wholesale, so the small `mdrk.*` tags the
+     * compat client reads must survive.
+     */
+    private fun sendRules(player: Player) {
+        val con = player.con ?: return
+
+        val rules = Vars.state.rules.copy()
+        val tags = rules.tags
+        rules.tags = StringMap()
+
+        var budget = rulesPacketLimit - JsonIO.write(rules).length
+
+        val entries = ArrayList<Pair<String, String>>(tags.size)
+        tags.each { key, value -> entries.add(key to value) }
+        entries.sortBy { it.first.length + it.second.length }
+
+        val dropped = ArrayList<String>()
+        for ((key, value) in entries) {
+            val cost = key.length + value.length + 8 // quotes, colon, separator
+            if (cost <= budget) {
+                budget -= cost
+                rules.tags.put(key, value)
+            } else {
+                dropped.add(key)
+            }
+        }
+
+        if (dropped.isNotEmpty()) {
+            Log.warn("Ruleset does not fit in one packet; @ tag(s) not sent to @: @",
+                dropped.size, Strings.stripColors(player.name), dropped.joinToString(", "))
+        }
+
+        Call.setRules(con, rules)
+    }
+
     @OptIn(ExperimentalSerializationApi::class)
     @JvmStatic
     fun init(loader: ClassLoader) {
@@ -503,31 +541,7 @@ object CorePlugin {
             ))
 
             if (restarting) Tl.send(it.player).done("{generic.restart-scheduled}")
-            timer(0.5f) {
-                val con = it.player.con
-                if (con != null) {
-                    // Tags are dropped on purpose. `mdrk.*` entries are server-side gamemode
-                    // config, nothing in the game reads Rules.tags on the client, and the client
-                    // already received them with the world. On a map that packs a lot into them
-                    // -- castle keeps its turret/miner tables and 5x5 schematics there -- the
-                    // serialized ruleset passes arcnet's 16384-byte object buffer, writeRules
-                    // throws BufferOverflowException inside TcpConnection.send, and arcnet closes
-                    // the connection. The player sees "connection closed" and the server log stays
-                    // clean, because arcnet reports that through ArcNet.errorHandler, which only
-                    // prints at debug level.
-                    val rules = Vars.state.rules.copy()
-                    rules.tags = StringMap()
-
-                    val size = JsonIO.write(rules).length
-                    if (size > rulesPacketLimit) {
-                        Log.warn(
-                            "Ruleset is @ bytes, over the @ byte packet limit. Not sending it to @ -- it would drop the connection.",
-                            size, rulesPacketLimit, Strings.stripColors(it.player.name))
-                    } else {
-                        Call.setRules(con, rules)
-                    }
-                }
-            }
+            timer(0.5f) { sendRules(it.player) }
         }
 
         on<EventType.BlockBuildEndEvent> {

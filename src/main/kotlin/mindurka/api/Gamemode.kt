@@ -311,6 +311,24 @@ object Gamemode {
     @JvmField
     var defaultPatch: Prov<String>? = null
 
+    /**
+     * Rules tags that have to reach the client, as exact keys or `prefix.*` patterns. Everything
+     * else stays server-side.
+     *
+     * The whole ruleset travels as one packet with a hard size limit, so it cannot carry
+     * everything a map puts in `Rules.tags`. Nothing in mindustry/core reads `Rules.tags` on a
+     * client, and gamemode tables like `mdrk.castle.*` are read by the server
+     * (CastleUtils.applyRules), so the default is the markers the compat client looks at.
+     * A tag listed here that does not fit is reported by ModifyWorld.syncRules as an error.
+     */
+    @JvmField
+    var syncedTags: Seq<String> = Seq.with(
+        SpecialSettings.FORMAT,
+        SpecialSettings.GAMEMODE,
+        SpecialSettings.GAMEMODE_LEGACY,
+        SpecialSettings.PATCH,
+    )
+
     @JvmField
     var bannedTools: java.util.EnumSet<mindurka.coreplugin.SSTool> = java.util.EnumSet.noneOf(mindurka.coreplugin.SSTool::class.java)
 

@@ -1,7 +1,9 @@
 package mindurka.util
 
+import arc.struct.Seq
 import arc.struct.StringMap
 import arc.util.Log
+import mindurka.api.Gamemode
 import arc.util.io.Writes
 import mindurka.api.Consts
 import mindustry.Vars
@@ -32,9 +34,10 @@ object ModifyWorld {
      * instead of Call.setRules.
      *
      * Rules go as one JSON blob in one packet, and overflowing arcnet's object buffer makes arcnet
-     * drop the connection rather than report an error. Tags are packed smallest-first while they
-     * fit, so the short `mdrk.*` ones the compat client reads survive and only the bulky
-     * per-gamemode tables are cut.
+     * drop the connection rather than report an error. Only the tags the gamemode declares in
+     * [Gamemode.syncedTags] are sent; the rest never leaves the server. Declared tags are packed
+     * smallest-first, and anything declared that still does not fit is an error, not a warning --
+     * the gamemode said it was needed.
      */
     @JvmStatic
     @JvmOverloads
@@ -58,9 +61,13 @@ object ModifyWorld {
             }
 
             var budget = rulesPacketLimit - bare
-            val entries = ArrayList<Triple<String, String, Int>>(tags.size)
+            val wanted = Gamemode.syncedTags
+            val entries = ArrayList<Triple<String, String, Int>>(wanted.size)
             // + 8 for quotes, colon and separator
-            tags.each { key, value -> entries.add(Triple(key, value, utf8Size(key) + utf8Size(value) + 8)) }
+            tags.each { key, value ->
+                if (tagWanted(key, wanted)) entries.add(Triple(key, value, utf8Size(key) + utf8Size(value) + 8))
+            }
+            Log.debug("@ of @ tag(s) declared in Gamemode.syncedTags", entries.size, tags.size)
             entries.sortBy { it.third }
 
             val dropped = ArrayList<String>()
@@ -74,14 +81,25 @@ object ModifyWorld {
             }
 
             if (dropped.isNotEmpty()) {
-                Log.warn("Ruleset does not fit in one packet (@ B without tags); @ tag(s) not synced: @",
-                    bare, dropped.size, dropped.joinToString(", "))
+                Log.err("Ruleset is @ B without tags, leaving @ B; @ declared tag(s) do not fit and are NOT synced: @",
+                    bare, rulesPacketLimit - bare, dropped.size, dropped.joinToString(", "))
             }
 
             if (con == null) Call.setRules(rules) else Call.setRules(con, rules)
         } finally {
             rules.tags = tags
         }
+    }
+
+    /** Whether [key] is listed in [patterns], either exactly or by a trailing `*` prefix. */
+    private fun tagWanted(key: String, patterns: Seq<String>): Boolean {
+        for (i in 0 until patterns.size) {
+            val p = patterns.get(i)
+            if (p.endsWith("*")) {
+                if (key.length >= p.length - 1 && key.regionMatches(0, p, 0, p.length - 1)) return true
+            } else if (p == key) return true
+        }
+        return false
     }
 
     /** UTF-8 length of a string, without encoding it into a throwaway array. */

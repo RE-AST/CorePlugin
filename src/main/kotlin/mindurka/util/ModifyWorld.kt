@@ -1,9 +1,11 @@
 package mindurka.util
 
+import arc.struct.StringMap
 import arc.util.Log
 import arc.util.io.Writes
 import mindurka.api.Consts
 import mindustry.Vars
+import mindustry.io.JsonIO
 import mindustry.content.Blocks
 import mindustry.core.NetServer
 import mindustry.game.Team
@@ -21,6 +23,56 @@ import mindustry.world.blocks.environment.Floor
 object ModifyWorld {
     /** Mirrors the private NetServer.maxSnapshotSize. */
     private const val maxSnapshotSize = 800
+
+    /** arcnet serializes one object into a 16384-byte buffer (ArcNetProvider: new Server(..., 16384, ...)). */
+    private const val rulesPacketLimit = 15_000
+
+    /**
+     * Send the ruleset to one connection, or to everyone when [con] is null. Always use this
+     * instead of Call.setRules.
+     *
+     * Rules go as one JSON blob in one packet, and overflowing arcnet's object buffer makes arcnet
+     * drop the connection rather than report an error. Tags are packed smallest-first while they
+     * fit, so the short `mdrk.*` ones the compat client reads survive and only the bulky
+     * per-gamemode tables are cut.
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun syncRules(con: NetConnection? = null) {
+        val rules = Vars.state.rules.copy()
+        val tags = rules.tags
+        rules.tags = StringMap()
+
+        val bare = JsonIO.write(rules).length
+        if (bare > rulesPacketLimit) {
+            Log.err("Ruleset is @ B even without tags, over the @ B packet limit. Not syncing it: sending it would drop every client.",
+                bare, rulesPacketLimit)
+            return
+        }
+
+        var budget = rulesPacketLimit - bare
+        val entries = ArrayList<Pair<String, String>>(tags.size)
+        tags.each { key, value -> entries.add(key to value) }
+        entries.sortBy { it.first.length + it.second.length }
+
+        val dropped = ArrayList<String>()
+        for ((key, value) in entries) {
+            val cost = key.length + value.length + 8 // quotes, colon, separator
+            if (cost <= budget) {
+                budget -= cost
+                rules.tags.put(key, value)
+            } else {
+                dropped.add(key)
+            }
+        }
+
+        if (dropped.isNotEmpty()) {
+            Log.warn("Ruleset does not fit in one packet (@ B without tags); @ tag(s) not synced: @",
+                bare, dropped.size, dropped.joinToString(", "))
+        }
+
+        if (con == null) Call.setRules(rules) else Call.setRules(con, rules)
+    }
 
     /**
      * Synchronize many buildings to one connection, batched like vanilla's own block snapshot

@@ -7,7 +7,6 @@ import arc.struct.IntMap
 import arc.struct.ObjectIntMap
 import arc.struct.ObjectMap
 import arc.struct.Seq
-import arc.struct.StringMap
 import arc.util.Log
 import arc.util.Strings
 import arc.util.Threads
@@ -63,7 +62,6 @@ import mindustry.gen.ConnectCallPacket
 import mindustry.gen.Groups
 import mindustry.gen.Player
 import mindustry.gen.SetTileCallPacket
-import mindustry.io.JsonIO
 import mindustry.mod.data.PatchAsset
 import mindustry.net.Administration
 import mindustry.world.Block
@@ -77,47 +75,6 @@ import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 
 object CorePlugin {
-    /** arcnet serializes one object into a 16384-byte buffer (ArcNetProvider: new Server(..., 16384, ...)). */
-    private const val rulesPacketLimit = 15_000
-
-    /**
-     * Re-send the ruleset to one player. Tags go smallest-first while they fit: the whole ruleset
-     * is one JSON blob in one packet, and overflowing arcnet's object buffer makes arcnet drop the
-     * connection. `setRules` replaces the client's Rules wholesale, so the small `mdrk.*` tags the
-     * compat client reads must survive.
-     */
-    private fun sendRules(player: Player) {
-        val con = player.con ?: return
-
-        val rules = Vars.state.rules.copy()
-        val tags = rules.tags
-        rules.tags = StringMap()
-
-        var budget = rulesPacketLimit - JsonIO.write(rules).length
-
-        val entries = ArrayList<Pair<String, String>>(tags.size)
-        tags.each { key, value -> entries.add(key to value) }
-        entries.sortBy { it.first.length + it.second.length }
-
-        val dropped = ArrayList<String>()
-        for ((key, value) in entries) {
-            val cost = key.length + value.length + 8 // quotes, colon, separator
-            if (cost <= budget) {
-                budget -= cost
-                rules.tags.put(key, value)
-            } else {
-                dropped.add(key)
-            }
-        }
-
-        if (dropped.isNotEmpty()) {
-            Log.warn("Ruleset does not fit in one packet; @ tag(s) not sent to @: @",
-                dropped.size, Strings.stripColors(player.name), dropped.joinToString(", "))
-        }
-
-        Call.setRules(con, rules)
-    }
-
     @OptIn(ExperimentalSerializationApi::class)
     @JvmStatic
     fun init(loader: ClassLoader) {
@@ -541,7 +498,7 @@ object CorePlugin {
             ))
 
             if (restarting) Tl.send(it.player).done("{generic.restart-scheduled}")
-            timer(0.5f) { sendRules(it.player) }
+            timer(0.5f) { it.player.con?.let(ModifyWorld::syncRules) }
         }
 
         on<EventType.BlockBuildEndEvent> {

@@ -144,6 +144,8 @@ object CorePlugin {
     }
 
     private var fakeBlockKind: Block? = null
+    /** The patch this plugin prepends on every world load, kept so it can be removed by identity. */
+    private var defaultPatchAsset: PatchAsset? = null
     private class FakeBlock(
         var x: Int,
         var y: Int,
@@ -178,9 +180,11 @@ object CorePlugin {
         on<EventType.WorldLoadEvent>(priority = Priority.Low) {
             fakeBlockPos.clear()
 
-            if (Vars.state.data.patches.size > 0 && Vars.state.data.patches[0].name == "Mindurka Default Patch") {
-                Vars.state.data.patches.remove(0)
-            }
+            // By identity, not by name: PatchAsset.name is filled by DataPatcher.apply from the
+            // patch's own "name" key and reset to "" when a patch fails to apply, so matching on
+            // the name lets a single broken patch make us prepend a new copy every world load.
+            defaultPatchAsset?.let { Vars.state.data.patches.remove(it, true) }
+            defaultPatchAsset = null
 
             fakeBlockKind = run {
                 for (shift in 0..min(Vars.world.width(), Vars.world.height()) / 2) {
@@ -253,7 +257,7 @@ object CorePlugin {
                 }
             }
 
-            Vars.state.data.reloadPatches(Vars.state.data.patches.copy().apply { insert(0, PatchAsset(run {
+            val asset = PatchAsset(run {
                 val patch = StringBuilder()
 
                 patch.append("name: Mindurka Default Patch\n")
@@ -287,7 +291,9 @@ object CorePlugin {
                 debug{"$patch"}
 
                 patch.toString()
-            })) })
+            })
+            defaultPatchAsset = asset
+            Vars.state.data.reloadPatches(Vars.state.data.patches.copy().apply { insert(0, asset) })
         }
         Vars.netServer.admins.addActionFilter { act ->
             if (!(act.type == Administration.ActionType.breakBlock && act.block == fakeBlockKind) || fakeBlockKind == null) return@addActionFilter true
